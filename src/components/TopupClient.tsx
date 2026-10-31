@@ -1,31 +1,37 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { Icon } from "@/components/Icon";
 import { ProductArt } from "@/components/ProductArt";
-import { formatRp, isSlug, PRODUCTS, type Item } from "@/lib/catalog";
-import { newOrderId, saveOrder, type Order } from "@/lib/store";
+import { formatRp, type Item, type Product } from "@/lib/catalog";
+import { createOrder } from "@/lib/db/client";
+import { toPublicError } from "@/lib/db/errors";
+import { rememberInvoice } from "@/lib/store";
 
-export function TopupClient() {
-  const search = useSearchParams();
-  const raw = search.get("g");
-  const slug = raw && isSlug(raw) ? raw : "ml";
-  const prefill = search.get("n") ?? "";
-
-  return <TopupForm key={`${slug}:${prefill}`} slug={slug} prefill={prefill} />;
-}
-
-function TopupForm({ slug, prefill }: { slug: string; prefill: string }) {
+export function TopupClient({
+  product,
+  slug,
+  prefill,
+  brandSlug,
+  qrisMethodId,
+}: {
+  product: Product;
+  slug: string;
+  prefill: string;
+  brandSlug: string;
+  qrisMethodId: string | null;
+}) {
   const router = useRouter();
-  const product = PRODUCTS[slug];
 
   const [uid, setUid] = useState(prefill);
   const [zone, setZone] = useState(product.server ? product.server[0] : "");
   const [provider, setProvider] = useState<string | null>(null);
   const [item, setItem] = useState<Item | null>(null);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState("");
 
   const zoneRequired = !!product.zone || !!product.server;
   const ready =
@@ -38,22 +44,47 @@ function TopupForm({ slug, prefill }: { slug: string; prefill: string }) {
     : `${uid.trim()}${zone ? ` (${zone})` : ""}`;
   const total = item?.p ?? 0;
 
-  const create = () => {
-    if (!ready || !item) return;
-    const id = newOrderId();
-    const order: Order = {
-      id,
-      slug,
-      name: product.name,
-      item: item.n,
-      account,
-      amount: item.p,
-      method: "QRIS",
-      status: "processing",
-      createdAt: Date.now(),
-    };
-    saveOrder(order);
-    router.push(`/bayar?id=${id}`);
+  const create = async () => {
+    if (!ready || !item || paying) return;
+    if (!product.dbServiceId || !item.id) {
+      setPayError("Data produk belum lengkap. Muat ulang halaman.");
+      return;
+    }
+    if (!brandSlug || !qrisMethodId) {
+      setPayError("Pembayaran belum tersedia. Coba lagi sebentar.");
+      return;
+    }
+
+    setPaying(true);
+    setPayError("");
+    try {
+      const created = await createOrder({
+        brandSlug,
+        serviceId: product.dbServiceId,
+        productId: item.id,
+        nomorTujuan: account,
+        input: {
+          provider: provider ?? product.name,
+          item: item.n,
+          nomor_tujuan: account,
+          uid: uid.trim(),
+          ...(zone ? { zone } : {}),
+        },
+        paymentMethodId: qrisMethodId,
+      });
+      rememberInvoice({
+        ref: created.ref,
+        name: product.name,
+        item: item.n,
+        slug,
+        amount: created.total,
+        createdAt: Date.now(),
+      });
+      router.push(`/bayar?id=${created.ref}`);
+    } catch (error) {
+      setPayError(toPublicError(error).message);
+      setPaying(false);
+    }
   };
 
   return (
@@ -251,16 +282,22 @@ function TopupForm({ slug, prefill }: { slug: string; prefill: string }) {
               </div>
               <button
                 type="button"
-                onClick={create}
-                disabled={!ready}
+                onClick={() => void create()}
+                disabled={!ready || paying}
                 className="btn btn-pk mt-5 w-full"
               >
-                Bayar sekarang <Icon name="arrow" />
+                {paying ? "Memproses…" : (
+                  <>
+                    Bayar sekarang <Icon name="arrow" />
+                  </>
+                )}
               </button>
               <p className="mut mt-3 text-center text-xs font-semibold">
-                {ready
-                  ? "Kamu akan dapat kode PLY untuk cek status."
-                  : "Isi data akun & pilih nominal dulu ya."}
+                {payError
+                  ? `⚠ ${payError}`
+                  : ready
+                    ? "Kamu akan dapat kode PLY untuk cek status."
+                    : "Isi data akun & pilih nominal dulu ya."}
               </p>
             </div>
           </aside>
@@ -276,14 +313,19 @@ function TopupForm({ slug, prefill }: { slug: string; prefill: string }) {
       <div className="buybar lg:hidden">
         <div className="min-w-0 flex-1">
           <div className="mut truncate text-xs font-bold">
-            {item?.n ?? "Belum pilih nominal"}
+            {payError ? `⚠ ${payError}` : item?.n ?? "Belum pilih nominal"}
           </div>
           <div className="dsp text-2xl" style={{ color: "var(--pk)" }}>
             {item ? formatRp(total) : "Rp0"}
           </div>
         </div>
-        <button type="button" onClick={create} disabled={!ready} className="btn btn-pk">
-          Bayar
+        <button
+          type="button"
+          onClick={() => void create()}
+          disabled={!ready || paying}
+          className="btn btn-pk"
+        >
+          {paying ? "…" : "Bayar"}
         </button>
       </div>
     </>

@@ -2,33 +2,88 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { Icon } from "@/components/Icon";
 import { ProductArt } from "@/components/ProductArt";
-import { formatRp } from "@/lib/catalog";
+import { formatRp, PRODUCTS } from "@/lib/catalog";
 import {
   WA_LINK,
   formatDateTime,
-  loadOrders,
-  type Order,
+  loadInvoices,
+  type RecentInvoice,
 } from "@/lib/store";
+
+type PublicStatus = "success" | "processing" | "pending" | "expired";
+
+type ApiOrder = {
+  inv: string;
+  status: PublicStatus;
+  service: string;
+  product: string;
+  lines: [string, string][];
+  method: string;
+  total: number;
+  sn: string;
+  label: string;
+  created: number;
+  updated: number;
+  paidAt?: number;
+  qris: string | null;
+};
+
+const statusText: Record<PublicStatus, string> = {
+  pending: "MENUNGGU PEMBAYARAN",
+  processing: "SEDANG DIPROSES",
+  success: "SELESAI",
+  expired: "DIBATALKAN",
+};
+
+function slugOf(name: string) {
+  const entry = Object.entries(PRODUCTS).find(([, product]) => product.name === name);
+  return entry ? entry[0] : "ml";
+}
 
 export function LacakClient() {
   const search = useSearchParams();
   const idParam = (search.get("id") ?? "").trim().toUpperCase();
   const [query, setQuery] = useState(idParam);
   const [active, setActive] = useState(idParam);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [result, setResult] = useState<ApiOrder | null | undefined>(undefined);
+  const [loading, setLoading] = useState(false);
+  const [invoices, setInvoices] = useState<RecentInvoice[]>([]);
 
   useEffect(() => {
-    setOrders(loadOrders());
+    setInvoices(loadInvoices());
   }, []);
+
+  const lookup = useCallback(async (code: string) => {
+    if (!code) {
+      setResult(undefined);
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(code)}`, {
+        cache: "no-store",
+      });
+      setResult(response.ok ? ((await response.json()) as ApiOrder) : null);
+    } catch {
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (idParam) void lookup(idParam);
+  }, [idParam, lookup]);
 
   const show = (value: string) => {
     const id = value.trim().toUpperCase();
     setQuery(id);
     setActive(id);
+    void lookup(id);
     if (id) {
       window.history.replaceState(null, "", `/lacak?id=${encodeURIComponent(id)}`);
     } else {
@@ -36,14 +91,12 @@ export function LacakClient() {
     }
   };
 
-  const select = (order: Order) => {
-    show(order.id);
+  const select = (entry: RecentInvoice) => {
+    show(entry.ref);
     document
       .getElementById("hasil")
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-
-  const order = active ? orders.find((entry) => entry.id === active) : undefined;
 
   return (
     <main className="wrap no-foot pb-12 pt-6 sm:pt-10">
@@ -71,11 +124,15 @@ export function LacakClient() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             className="in uppercase"
-            placeholder="Masukkan kode, contoh PLY-7KQ2MX"
+            placeholder="Masukkan kode PLY-XXXXXX"
             aria-label="Kode pesanan"
           />
-          <button type="submit" className="btn btn-sky">
-            Cek status <Icon name="arrow" />
+          <button type="submit" className="btn btn-sky" disabled={loading}>
+            {loading ? "Mencari…" : (
+              <>
+                Cek status <Icon name="arrow" />
+              </>
+            )}
           </button>
         </form>
         <div
@@ -97,27 +154,31 @@ export function LacakClient() {
                 Mulai top up
               </Link>
             </div>
-          ) : !order ? (
+          ) : loading ? (
+            <div className="card p-8 text-center">
+              <div className="dsp text-4xl">Mencari pesanan…</div>
+            </div>
+          ) : result ? (
+            <OrderResult order={result} />
+          ) : (
             <div className="card p-8 text-center">
               <div className="text-6xl">🔍</div>
               <div className="dsp mt-3 text-4xl">Kode nggak ketemu</div>
               <p className="mut mt-2 font-semibold">
-                Cek lagi kode <b>{active}</b>. Pesanan hanya tersimpan di
-                perangkat tempat kamu checkout.
+                Cek lagi kode <b>{active}</b>. Pastikan kode sesuai dengan pesanan
+                yang sudah dibuat.
               </p>
             </div>
-          ) : (
-            <OrderResult order={order} />
           )}
         </div>
 
         <aside className="card p-6">
           <div className="dsp text-3xl">Riwayat di perangkat ini</div>
           <div className="mt-4 space-y-3">
-            {orders.length ? (
-              orders.slice(0, 5).map((entry) => (
+            {invoices.length ? (
+              invoices.slice(0, 5).map((entry) => (
                 <button
-                  key={entry.id}
+                  key={entry.ref}
                   type="button"
                   onClick={() => select(entry)}
                   className="flex w-full items-center gap-3 rounded-2xl p-3 text-left hover:bg-[var(--sky2)]"
@@ -126,7 +187,7 @@ export function LacakClient() {
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-extrabold">{entry.name}</div>
                     <div className="mut text-xs font-semibold">
-                      {entry.id} · {formatDateTime(entry.createdAt)}
+                      {entry.ref} · {formatDateTime(entry.createdAt)}
                     </div>
                   </div>
                   <span className="text-sm font-bold">{formatRp(entry.amount)}</span>
@@ -140,8 +201,8 @@ export function LacakClient() {
             className="mt-5 rounded-2xl p-3 text-xs font-semibold leading-relaxed"
             style={{ background: "var(--yel)", border: "2.5px solid var(--ink)" }}
           >
-            Status sedang diproses akan diperbarui lewat WhatsApp. Simpan kode PLY
-            kamu.
+            Status diambil langsung dari server. Log lokal cuma menyimpan kode
+            invoice di browser ini.
           </div>
           <a
             href={WA_LINK}
@@ -157,25 +218,44 @@ export function LacakClient() {
   );
 }
 
-function OrderResult({ order }: { order: Order }) {
+function OrderResult({ order }: { order: ApiOrder }) {
   const [copied, setCopied] = useState(false);
+  const target =
+    order.lines.find(([label]) => /tujuan/i.test(label))?.[1] ?? "-";
+  const paidDone = order.status === "processing" || order.status === "success";
   const steps = [
-    { title: "Pesanan dibuat", detail: `checkout ${order.method}`, done: true },
     {
-      title: "Pembayaran diterima",
-      detail: `${formatRp(order.amount)} · dicek manual`,
+      title: "Pesanan dibuat",
+      detail: `checkout ${order.method}`,
       done: true,
     },
     {
-      title: "Sedang diproses",
+      title:
+        order.status === "expired"
+          ? "Pesanan dibatalkan"
+          : paidDone
+            ? "Pembayaran diterima"
+            : "Menunggu pembayaran",
+      detail: `${formatRp(order.total)} · dicek manual`,
+      done: paidDone,
+    },
+    {
+      title:
+        order.status === "success"
+          ? "Pesanan selesai"
+          : order.status === "processing"
+            ? "Sedang diproses"
+            : order.status === "expired"
+              ? "Tidak diproses"
+              : "Diproses setelah pembayaran",
       detail: "Pesanan diteruskan ke provider",
-      done: false,
+      done: order.status === "success",
     },
   ];
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(order.id);
+      await navigator.clipboard.writeText(order.inv);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -193,18 +273,18 @@ function OrderResult({ order }: { order: Order }) {
           className="w-16 flex-none overflow-hidden rounded-2xl"
           style={{ border: "3px solid var(--ink)" }}
         >
-          <ProductArt slug={order.slug} small />
+          <ProductArt slug={slugOf(order.service)} small />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold">{order.id}</div>
-          <div className="dsp mt-1 text-4xl leading-none">{order.name}</div>
+          <div className="text-sm font-bold">{order.inv}</div>
+          <div className="dsp mt-1 text-4xl leading-none">{order.service}</div>
         </div>
         <div className="basis-full sm:basis-auto">
           <span
             className="inline-flex w-fit rounded-full px-3 py-1.5 text-xs font-extrabold"
             style={{ background: "var(--yel)", border: "2.5px solid var(--ink)" }}
           >
-            ⏳ Sedang diproses
+            {statusText[order.status]}
           </span>
         </div>
       </div>
@@ -237,11 +317,11 @@ function OrderResult({ order }: { order: Order }) {
         >
           <div className="flex justify-between gap-4">
             <span className="mut">Item</span>
-            <span className="text-right">{order.item}</span>
+            <span className="text-right">{order.product}</span>
           </div>
           <div className="flex justify-between gap-4">
             <span className="mut">Akun</span>
-            <span className="break-all text-right">{order.account}</span>
+            <span className="break-all text-right">{target}</span>
           </div>
           <div className="flex justify-between gap-4">
             <span className="mut">Bayar</span>
@@ -249,15 +329,25 @@ function OrderResult({ order }: { order: Order }) {
           </div>
           <div className="flex justify-between gap-4">
             <span className="mut">Waktu</span>
-            <span>{formatDateTime(order.createdAt)}</span>
+            <span>{formatDateTime(order.created)}</span>
           </div>
         </div>
+
+        {order.sn ? (
+          <div
+            className="mt-4 rounded-2xl p-4"
+            style={{ background: "var(--sky2)", border: "2.5px solid var(--ink)" }}
+          >
+            <div className="mut text-xs font-bold">{order.label}</div>
+            <div className="mt-1 break-all font-extrabold">{order.sn}</div>
+          </div>
+        ) : null}
 
         <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="mut text-xs font-bold">TOTAL</div>
             <div className="dsp text-4xl" style={{ color: "var(--pk)" }}>
-              {formatRp(order.amount)}
+              {formatRp(order.total)}
             </div>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -268,7 +358,7 @@ function OrderResult({ order }: { order: Order }) {
                 </>
               )}
             </button>
-            <Link href={`/topup?g=${order.slug}`} className="btn btn-pk">
+            <Link href={`/topup?g=${slugOf(order.service)}`} className="btn btn-pk">
               Beli lagi
             </Link>
           </div>

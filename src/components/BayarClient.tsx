@@ -11,27 +11,71 @@ import {
   ADMIN_WA,
   PAID_MESSAGE,
   QRIS_IMAGE,
-  findOrder,
   formatDate,
   waLink,
-  type Order,
 } from "@/lib/store";
+
+type PublicStatus = "success" | "processing" | "pending" | "expired";
+
+type ApiOrder = {
+  inv: string;
+  status: PublicStatus;
+  service: string;
+  product: string;
+  lines: [string, string][];
+  method: string;
+  total: number;
+  sn: string;
+  label: string;
+  created: number;
+  updated: number;
+  paidAt?: number;
+  qris: string | null;
+};
+
+const statusText: Record<PublicStatus, string> = {
+  pending: "MENUNGGU PEMBAYARAN",
+  processing: "SEDANG DIPROSES",
+  success: "SELESAI",
+  expired: "DIBATALKAN",
+};
+
+function slugOf(name: string) {
+  const entry = Object.entries(PRODUCTS).find(([, product]) => product.name === name);
+  return entry ? entry[0] : "ml";
+}
 
 export function BayarClient() {
   const search = useSearchParams();
   const id = (search.get("id") ?? "").trim().toUpperCase();
-  const [order, setOrder] = useState<Order | null | undefined>(undefined);
+  const [order, setOrder] = useState<ApiOrder | null | undefined>(undefined);
   const [paid, setPaid] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    setOrder(id ? findOrder(id) ?? null : null);
+    let alive = true;
+    if (!id) {
+      setOrder(null);
+      return;
+    }
+    setOrder(undefined);
+    fetch(`/api/orders/${encodeURIComponent(id)}`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (alive) setOrder((data as ApiOrder | null) ?? null);
+      })
+      .catch(() => {
+        if (alive) setOrder(null);
+      });
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
   const copyId = async () => {
     if (!order) return;
     try {
-      await navigator.clipboard.writeText(order.id);
+      await navigator.clipboard.writeText(order.inv);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -54,8 +98,8 @@ export function BayarClient() {
           <div className="text-6xl">🔍</div>
           <div className="dsp mt-3 text-4xl">Pesanan nggak ketemu</div>
           <p className="mut mt-2 font-semibold">
-            Kode pesanan tidak ada di perangkat ini. Coba buat pesanan baru atau
-            cek kode PLY kamu di halaman Cek Pesanan.
+            Kode pesanan tidak cocok dengan data server. Cek kode PLY kamu di
+            halaman Cek Pesanan, atau buat pesanan baru.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Link href="/game" className="btn btn-pk">
@@ -70,9 +114,12 @@ export function BayarClient() {
     );
   }
 
-  const product = PRODUCTS[order.slug];
+  const target =
+    order.lines.find(([label]) => /tujuan/i.test(label))?.[1] ?? "-";
+  const activeStatus = paid ? "processing" : order.status;
+  const canPay = activeStatus === "pending";
   const waMessage = waLink(
-    `Halo, saya sudah bayar pesanan ${order.id} sebesar ${formatRp(order.amount)}. Mohon dicek ya.`,
+    `Halo, saya sudah bayar pesanan ${order.inv} sebesar ${formatRp(order.total)}. Mohon dicek ya.`,
   );
 
   return (
@@ -92,31 +139,41 @@ export function BayarClient() {
               className="w-16 flex-none overflow-hidden rounded-2xl sm:w-20"
               style={{ border: "3px solid var(--ink)" }}
             >
-              <ProductArt slug={order.slug} small />
+              <ProductArt slug={slugOf(order.service)} small />
             </div>
             <div>
               <h1 className="dsp text-4xl leading-none sm:text-5xl">
-                {paid ? "Pembayaran diterima" : "Selesaikan pembayaran"}
+                {paid
+                  ? "Pembayaran diterima"
+                  : activeStatus === "success"
+                    ? "Pesanan selesai"
+                    : activeStatus === "expired"
+                      ? "Pesanan dibatalkan"
+                      : "Selesaikan pembayaran"}
               </h1>
               <p className="mut mt-2 font-semibold">
-                {order.name} · {order.item}
+                {order.service} · {order.product}
               </p>
             </div>
           </div>
           <span
             className="w-fit rounded-full px-4 py-2 text-xs font-extrabold"
             style={{
-              background: paid ? "var(--sky)" : "var(--yel)",
+              background: activeStatus === "success" || paid ? "var(--sky)" : "var(--yel)",
               border: "2.5px solid var(--ink)",
             }}
           >
-            {paid ? "⏳ Sedang diproses" : "⏳ Menunggu pembayaran"}
+            {activeStatus === "success" || paid
+              ? "✅ Selesai"
+              : activeStatus === "expired"
+                ? "✖ Dibatalkan"
+                : "⏳ Menunggu pembayaran"}
           </span>
         </div>
 
         <div className="mt-6 grid items-start gap-6 lg:grid-cols-[1fr_380px]">
           <section className="card p-5 sm:p-8">
-            {paid ? (
+            {!canPay ? (
               <div className="py-6 text-center">
                 <span
                   className="mx-auto grid h-16 w-16 place-items-center rounded-2xl"
@@ -126,18 +183,26 @@ export function BayarClient() {
                     boxShadow: "4px 4px 0 var(--ink)",
                   }}
                 >
-                  <Icon name="check" className="h-8 w-8" />
+                  <Icon name={activeStatus === "expired" ? "clock" : "check"} className="h-8 w-8" />
                 </span>
                 <h2 className="dsp mx-auto mt-6 max-w-md text-4xl leading-tight sm:text-5xl">
-                  {PAID_MESSAGE}
+                  {paid
+                    ? PAID_MESSAGE
+                    : activeStatus === "success"
+                      ? "Terima kasih, pesanan sudah selesai"
+                      : "Pesanan sudah dibatalkan"}
                 </h2>
                 <p className="mut mx-auto mt-3 max-w-md font-semibold">
-                  Pembayaran QRIS kamu dicek tim kami, lalu pesanan diteruskan ke
-                  provider. Pantau statusnya dengan kode{" "}
-                  <b style={{ color: "var(--ink)" }}>{order.id}</b>.
+                  {paid
+                    ? "Pembayaran QRIS kamu dicek tim kami, lalu pesanan diteruskan ke provider."
+                    : activeStatus === "success"
+                      ? "Item sudah dikirim. Cek detail dan SN di halaman Cek Pesanan."
+                      : "Pesanan ini sudah tidak aktif. Silakan buat pesanan baru bila perlu."}{" "}
+                  Pantau statusnya dengan kode{" "}
+                  <b style={{ color: "var(--ink)" }}>{order.inv}</b>.
                 </p>
                 <div className="mt-7 flex flex-wrap justify-center gap-3">
-                  <Link href={`/lacak?id=${order.id}`} className="btn btn-pk">
+                  <Link href={`/lacak?id=${order.inv}`} className="btn btn-pk">
                     Cek pesanan <Icon name="arrow" />
                   </Link>
                   <a
@@ -156,10 +221,10 @@ export function BayarClient() {
                   <div>
                     <span className="stk">Scan pakai QRIS</span>
                     <div className="dsp mt-4 text-5xl sm:text-6xl">
-                      {formatRp(order.amount)}
+                      {formatRp(order.total)}
                     </div>
                     <div className="mut mt-1 text-sm font-bold">
-                      {order.id} · {formatDate(order.createdAt)}
+                      {order.inv} · {formatDate(order.created)}
                     </div>
                   </div>
                   <span
@@ -176,7 +241,7 @@ export function BayarClient() {
                     style={{ border: "3px solid var(--ink)" }}
                   >
                     <img
-                      src={QRIS_IMAGE}
+                      src={order.qris || QRIS_IMAGE}
                       alt="Kode QRIS untuk pembayaran pesanan"
                       className="block h-auto w-full rounded-xl"
                       width={520}
@@ -191,7 +256,7 @@ export function BayarClient() {
                     {[
                       "Buka aplikasi bank atau e-wallet pilihanmu.",
                       "Pilih menu bayar QRIS, lalu scan kode di samping.",
-                      `Periksa nominal ${formatRp(order.amount)} dan selesaikan pembayaran.`,
+                      `Periksa nominal ${formatRp(order.total)} dan selesaikan pembayaran.`,
                       'Tekan "Saya sudah bayar" setelah transaksi berhasil.',
                     ].map((step, index) => (
                       <li key={step} className="flex gap-3">
@@ -223,7 +288,7 @@ export function BayarClient() {
                   <Icon name="chat" /> Konfirmasi via WhatsApp
                 </a>
                 <p className="mut mt-3 text-center text-xs font-semibold">
-                  Pembayaran dicek manual · simpan kode {order.id}
+                  Pembayaran dicek manual · simpan kode {order.inv}
                 </p>
               </>
             )}
@@ -244,11 +309,12 @@ export function BayarClient() {
             </div>
             <div className="mt-4" style={{ borderTop: "2.5px dashed var(--ink)" }}>
               {[
-                ["kode", order.id],
-                ["produk", order.name],
-                ["item", order.item],
-                ["akun", order.account],
+                ["kode", order.inv],
+                ["produk", order.service],
+                ["item", order.product],
+                ["akun", target],
                 ["metode", order.method],
+                ["status", statusText[activeStatus].toLowerCase()],
               ].map(([label, value]) => (
                 <div key={label} className="invoice-line">
                   <span className="mut">{label}</span>
@@ -262,15 +328,15 @@ export function BayarClient() {
             >
               <span className="font-bold">Total</span>
               <span className="dsp text-4xl" style={{ color: "var(--pk)" }}>
-                {formatRp(order.amount)}
+                {formatRp(order.total)}
               </span>
             </div>
             <div
               className="mt-5 rounded-2xl p-3 text-xs font-semibold leading-relaxed"
               style={{ background: "var(--yel)", border: "2.5px solid var(--ink)" }}
             >
-              Mode simulasi · pembayaran QRIS diverifikasi manual oleh tim. Simpan
-              kode pesanan untuk cek status.
+              Pembayaran manual · QRIS diverifikasi tim. Simpan kode pesanan
+              untuk cek status.
             </div>
             <p className="mut mt-4 text-xs font-semibold">
               Butuh bantuan? WhatsApp {ADMIN_WA}.
@@ -282,20 +348,20 @@ export function BayarClient() {
       <div className="buybar lg:hidden">
         <div className="min-w-0 flex-1">
           <div className="mut truncate text-xs font-bold">
-            {paid ? `${order.id} · sedang diproses` : `${order.id} · QRIS`}
+            {order.inv} · {statusText[activeStatus].toLowerCase()}
           </div>
           <div className="dsp text-2xl" style={{ color: "var(--pk)" }}>
-            {formatRp(order.amount)}
+            {formatRp(order.total)}
           </div>
         </div>
-        {paid ? (
-          <Link href={`/lacak?id=${order.id}`} className="btn btn-pk">
-            Cek
-          </Link>
-        ) : (
+        {canPay ? (
           <button type="button" className="btn btn-pk" onClick={() => setPaid(true)}>
             Saya sudah bayar
           </button>
+        ) : (
+          <Link href={`/lacak?id=${order.inv}`} className="btn btn-pk">
+            Cek
+          </Link>
         )}
       </div>
     </>

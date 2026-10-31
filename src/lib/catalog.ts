@@ -6,6 +6,7 @@ export type Item = {
   n: string;
   p: number;
   h?: boolean;
+  id?: string;
 };
 
 export type Product = {
@@ -23,6 +24,7 @@ export type Product = {
   server?: string[];
   providers?: string[];
   items: Item[];
+  dbServiceId?: string;
 };
 
 const unitItems = (rows: [number, number, boolean?][], unit: string): Item[] =>

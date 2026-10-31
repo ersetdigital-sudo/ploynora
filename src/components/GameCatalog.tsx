@@ -20,7 +20,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "ppob", label: "📱 Pulsa & tagihan" },
 ];
 
-export function GameCatalog() {
+export function GameCatalog({ minPrices }: { minPrices: Record<string, number> }) {
   const search = useSearchParams();
   const initial = search.get("c");
   const [cat, setCat] = useState<Tab>(initial === "game" || initial === "ppob" ? initial : "all");
@@ -83,7 +83,7 @@ export function GameCatalog() {
       {list.length ? (
         <div className="grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-3 lg:grid-cols-4">
           {list.map((slug) => (
-            <ProductTile key={slug} slug={slug} />
+            <ProductTile key={slug} slug={slug} min={minPrices[slug]} />
           ))}
         </div>
       ) : (

@@ -3,13 +3,8 @@ import { Hero } from "@/components/Hero";
 import { HomeSearch } from "@/components/HomeSearch";
 import { Icon } from "@/components/Icon";
 import { ProductTile } from "@/components/ProductTile";
-import {
-  formatRp,
-  GAME_KEYS,
-  minPrice,
-  PPOB_KEYS,
-  PRODUCTS,
-} from "@/lib/catalog";
+import { formatRp, GAME_KEYS, PPOB_KEYS, PRODUCTS } from "@/lib/catalog";
+import { getStorefront } from "@/lib/catalog-hydrate";
 
 const STEPS = [
   {
@@ -29,7 +24,9 @@ const STEPS = [
   },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  const storefront = await getStorefront();
+
   return (
     <main>
       <section className="wrap pt-8 lg:pt-14">
@@ -64,7 +61,7 @@ export default function HomePage() {
         </div>
         <div className="rv mt-8 grid grid-cols-2 gap-4 sm:gap-5 md:grid-cols-4">
           {GAME_KEYS.map((slug) => (
-            <ProductTile key={slug} slug={slug} />
+            <ProductTile key={slug} slug={slug} min={storefront.minPrices[slug]} />
           ))}
         </div>
         <Link href="/game" className="btn btn-w mt-6 w-full sm:hidden">
@@ -107,7 +104,7 @@ export default function HomePage() {
                   <div>
                     <div className="dsp text-2xl">{product.name}</div>
                     <div className="mut text-sm font-semibold">
-                      mulai {formatRp(minPrice(slug))}
+                      mulai {formatRp(storefront.minPrices[slug])}
                     </div>
                   </div>
                 </Link>
